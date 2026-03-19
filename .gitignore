@@ -1,0 +1,26 @@
+# Environment
+.env
+.venv/
+
+# Temporary session data
+temp_sessions/
+chroma_db/
+
+# Never commit PDFs (sensitive content)
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
