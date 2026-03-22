@@ -42,11 +42,9 @@ class Settings(BaseSettings):
     # repr=False prevents the key from appearing in logs or debug output.
     huggingface_api_key: str = Field(default="", repr=False)
     embedding_provider: str = Field(default="huggingface")
-    # Best open-source multilingual retrieval model for Spanish judicial text
     embedding_model: str = Field(
-        default="intfloat/multilingual-e5-large-instruct", min_length=1
+        default="Alibaba-NLP/gte-multilingual-base", min_length=1
     )
-
     # Pipeline
     # Keep max_parallel_pdfs low on memory-constrained environments
     max_parallel_pdfs: int = Field(default=4, ge=1, le=10)
@@ -94,7 +92,7 @@ class Settings(BaseSettings):
         # Hugging Face key is required for embedding API calls
         if self.embedding_provider == "huggingface" and not self.huggingface_api_key:
             raise ValueError(
-                "HUGGINGFACE_API_KEY is required when " "EMBEDDING_PROVIDER=huggingface"
+                "HUGGINGFACE_API_KEY is required when EMBEDDING_PROVIDER=huggingface"
             )
 
         # Overlap must be strictly smaller than chunk size,

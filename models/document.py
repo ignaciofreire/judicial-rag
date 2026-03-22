@@ -42,15 +42,16 @@ class DocumentMetadata(BaseModel):
         filename: Original PDF filename.
         total_pages: Total number of pages in the document.
         total_chunks: Number of chunks generated during extraction.
-        ocr_applied: True if Docling used OCR, meaning the PDF was scanned
-            rather than a native digital document. Useful for debugging
-            extraction quality issues.
+        ocr_applied: True if Docling used OCR during extraction.
+        is_scanned: True if the user indicated this PDF is a scanned
+            document. Determines whether OCR is applied at extraction time.
     """
 
     filename: str
     total_pages: int = Field(ge=1)
     total_chunks: int = Field(ge=0)
     ocr_applied: bool = False
+    is_scanned: bool = False
 
 
 class DocumentResult(BaseModel):
