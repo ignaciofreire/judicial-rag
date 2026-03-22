@@ -9,7 +9,7 @@ Models:
     DocumentResult: full extraction result for a single PDF.
 """
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class Chunk(BaseModel):
@@ -21,11 +21,10 @@ class Chunk(BaseModel):
         page: Page number where the chunk starts (1-indexed).
         chunk_index: Position of this chunk within the document (0-indexed).
         chunk_id: Unique key for storage, format: "{source}_{page}_{chunk_index}".
-        section: Header of the section this chunk belongs to, detected dynamically
-            from Docling's markdown output. None if the chunk has no parent section.
+        headings: Breadcrumb of section headers this chunk falls under, as detected
+            by Docling's document hierarchy. Empty list if the chunk has no parent
+            section. Example: ["FUNDAMENTOS DE DERECHO", "PRIMERO.-"].
             Stored as ChromaDB metadata to enable section-aware retrieval.
-        section_level: Nesting level of the section header (1 for ##, 2 for ###).
-            None if section is None.
     """
 
     text: str = Field(min_length=1)
@@ -33,15 +32,7 @@ class Chunk(BaseModel):
     page: int = Field(ge=1)
     chunk_index: int = Field(ge=0)
     chunk_id: str
-    section: str | None = None
-    section_level: int | None = None
-
-    @model_validator(mode="after")
-    def validate_section_fields(self) -> "Chunk":
-        # section_level without section would produce inconsistent ChromaDB metadata
-        if self.section_level is not None and self.section is None:
-            raise ValueError("section_level requires section to be set.")
-        return self
+    headings: list[str] = []
 
 
 class DocumentMetadata(BaseModel):
