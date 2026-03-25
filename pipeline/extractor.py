@@ -9,6 +9,8 @@ need for regex-based section detection.
 """
 
 import asyncio
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -22,6 +24,8 @@ from transformers import AutoTokenizer
 from config.settings import settings
 from models.document import Chunk, DocumentMetadata, DocumentResult
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Module-level singletons
 # ---------------------------------------------------------------------------
@@ -29,13 +33,24 @@ from models.document import Chunk, DocumentMetadata, DocumentResult
 # across every extraction call. Instantiating these inside _extract_sync
 # would reload Docling's layout models on every PDF call.
 
+logger.debug("Initialising extractor module singletons")
+
 _executor = ThreadPoolExecutor(max_workers=settings.max_parallel_pdfs)
+logger.debug("Thread pool created with %d workers", settings.max_parallel_pdfs)
 
 # Tokenizer used only to measure chunk sizes — not for generating embeddings.
+# bert-base-multilingual-cased is chosen because:
+#   - it ships with the sentence_bert_config.json HuggingFaceTokenizer needs
+#   - it covers 104 languages including Spanish
+#   - it is lightweight (996 kB vocab) and loads in < 1s
+# The actual embeddings are produced by gte-multilingual-base via the HF
+# Inference API in embedder.py, which has an 8192-token context window.
+# 512 tokens here keeps chunks well within that limit.
 _tokenizer = HuggingFaceTokenizer(
     tokenizer=AutoTokenizer.from_pretrained("bert-base-multilingual-cased"),
     max_tokens=512,
 )
+logger.debug("Chunking tokenizer loaded: bert-base-multilingual-cased (max_tokens=512)")
 
 
 def _make_pipeline_options(*, ocr: bool) -> PdfPipelineOptions:
@@ -83,6 +98,7 @@ def _make_converter(*, ocr: bool) -> DocumentConverter:
 # The caller selects between them based on the user-provided is_scanned flag.
 _digital_converter = _make_converter(ocr=False)
 _ocr_converter = _make_converter(ocr=True)
+logger.debug("Docling converters ready (digital + OCR)")
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +121,7 @@ async def extract(pdf_path: Path, is_scanned: bool = False) -> DocumentResult:
     Returns:
         DocumentResult with all chunks and document metadata.
     """
+    logger.info("Queuing extraction: %s (is_scanned=%s)", pdf_path.name, is_scanned)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_executor, _extract_sync, pdf_path, is_scanned)
 
@@ -131,14 +148,31 @@ def _extract_sync(pdf_path: Path, is_scanned: bool) -> DocumentResult:
         FileNotFoundError: If the PDF does not exist at the given path.
         RuntimeError: If Docling fails to convert the document.
     """
+    logger.debug("_extract_sync started: %s", pdf_path.name)
+    t_start = time.perf_counter()
+
     if not pdf_path.exists():
+        logger.error("PDF not found: %s", pdf_path)
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
     converter = _ocr_converter if is_scanned else _digital_converter
+    logger.debug(
+        "Using %s converter for %s",
+        "OCR" if is_scanned else "digital",
+        pdf_path.name,
+    )
 
     try:
+        t_convert = time.perf_counter()
         result = converter.convert(str(pdf_path))
+        logger.debug(
+            "Docling conversion complete: %s (%.2fs)",
+            pdf_path.name,
+            time.perf_counter() - t_convert,
+        )
     except Exception as e:
+        # logger.exception logs the message and the full traceback automatically
+        logger.exception("Docling conversion failed for %s", pdf_path.name)
         raise RuntimeError(f"Docling failed to convert {pdf_path.name}: {e}") from e
 
     chunker = HybridChunker(
@@ -148,18 +182,33 @@ def _extract_sync(pdf_path: Path, is_scanned: bool) -> DocumentResult:
         merge_peers=True,
     )
 
+    t_chunk = time.perf_counter()
     chunks = _build_chunks(chunker, result.document, pdf_path.name)
-
-    return DocumentResult(
-        metadata=DocumentMetadata(
-            filename=pdf_path.name,
-            total_pages=max((c.page for c in chunks), default=1),
-            total_chunks=len(chunks),
-            ocr_applied=is_scanned,
-            is_scanned=is_scanned,
-        ),
-        chunks=chunks,
+    logger.debug(
+        "Chunking complete: %s — %d chunks in %.2fs",
+        pdf_path.name,
+        len(chunks),
+        time.perf_counter() - t_chunk,
     )
+
+    metadata = DocumentMetadata(
+        filename=pdf_path.name,
+        total_pages=max((c.page for c in chunks), default=1),
+        total_chunks=len(chunks),
+        ocr_applied=is_scanned,
+        is_scanned=is_scanned,
+    )
+
+    logger.info(
+        "Extraction complete: %s — %d chunks, %d pages, ocr=%s (total %.2fs)",
+        pdf_path.name,
+        metadata.total_chunks,
+        metadata.total_pages,
+        metadata.ocr_applied,
+        time.perf_counter() - t_start,
+    )
+
+    return DocumentResult(metadata=metadata, chunks=chunks)
 
 
 def _build_chunks(
@@ -187,14 +236,27 @@ def _build_chunks(
         Ordered list of Chunk instances, one per non-empty Docling chunk.
     """
     chunks: list[Chunk] = []
+    skipped = 0
 
     for chunk_index, docling_chunk in enumerate(chunker.chunk(dl_doc=doc)):
         text = chunker.contextualize(chunk=docling_chunk)
 
         if not text.strip():
+            skipped += 1
+            logger.debug("Skipping empty chunk %d in %s", chunk_index, filename)
             continue
 
         page = _get_page(docling_chunk)
+        headings = list(docling_chunk.meta.headings or [])
+
+        logger.debug(
+            "Chunk %d: page=%d headings=%s text_preview=%r",
+            chunk_index,
+            page,
+            headings,
+            text[:60],
+        )
+
         chunks.append(
             Chunk(
                 text=text,
@@ -202,9 +264,12 @@ def _build_chunks(
                 page=page,
                 chunk_index=chunk_index,
                 chunk_id=f"{filename}_{page}_{chunk_index}",
-                headings=list(docling_chunk.meta.headings or []),
+                headings=headings,
             )
         )
+
+    if skipped:
+        logger.debug("Skipped %d empty chunks in %s", skipped, filename)
 
     return chunks
 
@@ -227,5 +292,9 @@ def _get_page(docling_chunk: object) -> int:
         if doc_items and doc_items[0].prov:
             return doc_items[0].prov[0].page_no
     except Exception:
-        pass
+        # Provenance metadata is absent for some element types — fall back
+        # to page 1 rather than crashing the entire extraction
+        logger.debug(
+            "Could not extract page number from chunk provenance, defaulting to 1"
+        )
     return 1
