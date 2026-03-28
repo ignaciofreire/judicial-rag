@@ -42,9 +42,10 @@ class Settings(BaseSettings):
     # repr=False prevents the key from appearing in logs or debug output.
     huggingface_api_key: str = Field(default="", repr=False)
     embedding_provider: str = Field(default="huggingface")
-    embedding_model: str = Field(
-        default="Alibaba-NLP/gte-multilingual-base", min_length=1
-    )
+    embedding_model: str = Field(default="intfloat/multilingual-e5-large", min_length=1)
+    # Embedding vector dimension — must match the model output
+    # intfloat/multilingual-e5-large produces 1024-dimensional vectors
+    embedding_dimensions: int = Field(default=1024, ge=1)
     # Pipeline
     # Keep max_parallel_pdfs low on memory-constrained environments
     max_parallel_pdfs: int = Field(default=4, ge=1, le=10)
